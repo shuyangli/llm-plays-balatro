@@ -13,15 +13,13 @@ def choose_simple_action(env: BalatroEnv) -> Action:
     if observation.phase in {"blind_select", "shop"}:
         return Action.create("noop")
 
-    selected = list(env.engine.state.selected_card_ids)
-    if len(selected) < 5:
-        select_actions = [action for action in legal if action.kind == "select_card"]
-        if select_actions:
-            return select_actions[0]
+    play_actions = [action for action in legal if action.kind == "play_hand" and len(action.target_ids) == 5]
+    if play_actions:
+        return play_actions[0]
 
     play_actions = [action for action in legal if action.kind == "play_hand"]
     if play_actions:
-        return play_actions[0]
+        return play_actions[-1]
 
     return legal[0]
 
@@ -109,10 +107,7 @@ class BalatroEnvTest(unittest.TestCase):
         env = BalatroEnv(EnvironmentConfig(seed=3, reward_model="score_delta"))
         env.reset()
         env.step(Action.create("noop"))
-        while len(env.engine.state.selected_card_ids) < 5:
-            select_action = next(action for action in env.legal_actions() if action.kind == "select_card")
-            env.step(select_action)
-        result = env.step(next(action for action in env.legal_actions() if action.kind == "play_hand"))
+        result = env.step(next(action for action in env.legal_actions() if action.kind == "play_hand" and len(action.target_ids) == 5))
         expected = float(result.info["transition_metrics"]["score_delta"])
         self.assertEqual(expected, result.reward)
 
@@ -131,10 +126,7 @@ class BalatroEnvTest(unittest.TestCase):
         env.reset()
         env.step(Action.create("noop"))
         env.engine.state.score_target = 10
-        while len(env.engine.state.selected_card_ids) < 5:
-            select_action = next(action for action in env.legal_actions() if action.kind == "select_card")
-            env.step(select_action)
-        play_result = env.step(next(action for action in env.legal_actions() if action.kind == "play_hand"))
+        play_result = env.step(next(action for action in env.legal_actions() if action.kind == "play_hand" and len(action.target_ids) == 5))
         self.assertEqual("shop", play_result.observation.phase)
         buy_action = next(action for action in env.legal_actions() if action.kind == "buy_shop_item")
         buy_result = env.step(buy_action)

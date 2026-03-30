@@ -7,16 +7,14 @@ from typing import Any, Literal
 ObservationMode = Literal["canonical", "tensor", "llm"]
 IllegalActionMode = Literal["raise", "mask_only"]
 ActionKind = Literal[
-    "select_card",
-    "deselect_card",
     "play_hand",
-    "discard_selected",
+    "discard_cards",
+    "apply_tarot",
     "buy_shop_item",
     "sell_joker",
     "reroll_shop",
     "move_joker",
     "choose_blind_reward",
-    "use_consumable",
     "skip_blind",
     "noop",
 ]
@@ -54,7 +52,7 @@ class Action:
     ) -> "Action":
         return cls(
             kind=kind,
-            target_ids=tuple(target_ids or ()),
+            target_ids=tuple(sorted(target_ids or ())),
             target_slot=target_slot,
             metadata=tuple(sorted((metadata or {}).items())),
         )
@@ -184,7 +182,6 @@ class GameState:
     hand: list[Card]
     discard_pile: list[Card]
     played_cards: list[Card]
-    selected_card_ids: list[str]
     jokers: list[JokerInstance]
     shop_inventory: list[ShopItem]
     event_log: list[str]

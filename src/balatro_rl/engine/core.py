@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from itertools import combinations
 from typing import Iterable
 
 import balatro_rl.engine.content as content
@@ -80,16 +81,13 @@ class GameEngine:
             return actions
         if phase == "round_play":
             actions: list[Action] = []
-            selected = set(self.state.selected_card_ids)
-            for card in self.state.hand:
-                if card.id in selected:
-                    actions.append(Action.create("deselect_card", [card.id]))
-                elif len(selected) < 5:
-                    actions.append(Action.create("select_card", [card.id]))
-            if self.state.selected_card_ids:
-                actions.append(Action.create("play_hand", list(self.state.selected_card_ids)))
-                if self.state.discards_remaining > 0:
-                    actions.append(Action.create("discard_selected", list(self.state.selected_card_ids)))
+            max_cards = min(5, len(self.state.hand))
+            for count in range(1, max_cards + 1):
+                for combo in combinations(self.state.hand, count):
+                    card_ids = [card.id for card in combo]
+                    actions.append(Action.create("play_hand", card_ids))
+                    if self.state.discards_remaining > 0:
+                        actions.append(Action.create("discard_cards", card_ids))
             return actions
         actions = [Action.create("noop")]
         for item in self.state.shop_inventory:
@@ -125,7 +123,7 @@ class GameEngine:
             "played_cards": [self._card_to_dict(card) for card in self.state.played_cards],
             "jokers": [self._joker_to_dict(joker) for joker in self.state.jokers],
             "shop_inventory": [self._shop_item_to_dict(item) for item in self.state.shop_inventory],
-            "selected_card_ids": list(self.state.selected_card_ids),
+            "consumables": [],
         }
         blind_state = {
             "kind": blind.kind,
@@ -136,7 +134,6 @@ class GameEngine:
         }
         derived_metrics = {
             "score_ratio": 0.0 if self.state.score_target == 0 else self.state.score / self.state.score_target,
-            "selected_count": len(self.state.selected_card_ids),
             "deck_remaining": len(self.state.draw_pile) + len(self.state.discard_pile) + len(self.state.hand),
         }
         llm_view = None
@@ -210,15 +207,10 @@ class GameEngine:
             metrics.money_delta += 1
             self._append_event(f"Skipped {content.get_blind(self.state.ante, self.state.blind_index).kind} blind")
             self._advance_to_next_blind(metrics)
-        elif action.kind == "select_card":
-            self.state.selected_card_ids.append(action.target_ids[0])
-        elif action.kind == "deselect_card":
-            card_id = action.target_ids[0]
-            self.state.selected_card_ids = [selected for selected in self.state.selected_card_ids if selected != card_id]
         elif action.kind == "play_hand":
-            self._play_selected_hand(metrics)
-        elif action.kind == "discard_selected":
-            self._discard_selected(metrics)
+            self._play_cards(action.target_ids, metrics)
+        elif action.kind == "discard_cards":
+            self._discard_cards(action.target_ids, metrics)
         elif action.kind == "buy_shop_item":
             self._buy_shop_item(action, metrics)
         elif action.kind == "sell_joker":
@@ -317,7 +309,6 @@ class GameEngine:
             hand=[],
             discard_pile=[],
             played_cards=[],
-            selected_card_ids=[],
             jokers=[],
             shop_inventory=[],
             event_log=[],
@@ -342,7 +333,6 @@ class GameEngine:
             hand=[],
             discard_pile=[],
             played_cards=[],
-            selected_card_ids=[],
             jokers=[],
             shop_inventory=[],
             event_log=["Run initialized"],
@@ -358,7 +348,6 @@ class GameEngine:
         self.state.score_target = blind.target_score
         self.state.hands_remaining = content.MAX_HAND_PLAYS
         self.state.discards_remaining = content.MAX_DISCARDS
-        self.state.selected_card_ids = []
         self.state.played_cards = []
         self.state.pending_blind_reward = blind.reward_money
         self.state.shop_inventory = []
@@ -366,8 +355,9 @@ class GameEngine:
         self._draw_to_hand()
         self._append_event(f"Started {blind.kind} blind with target {blind.target_score}")
 
-    def _play_selected_hand(self, metrics: TransitionMetrics) -> None:
-        selected = [card for card in self.state.hand if card.id in set(self.state.selected_card_ids)]
+    def _play_cards(self, card_ids: tuple[str, ...], metrics: TransitionMetrics) -> None:
+        selected_ids = set(card_ids)
+        selected = [card for card in self.state.hand if card.id in selected_ids]
         score_result = rules.score_selected_hand(selected, self.state.jokers)
         self.state.jokers = score_result.updated_jokers
         self.state.score += score_result.total_score
@@ -375,14 +365,13 @@ class GameEngine:
         metrics.hands_spent = 1
         metrics.joker_triggers += score_result.joker_triggers
         self._append_event(
-            f"Played {score_result.hand_name} for {score_result.total_score} score"
+            f"Played {score_result.hand_name} with {len(selected)} card(s) for {score_result.total_score} score"
         )
 
-        remaining_hand = [card for card in self.state.hand if card.id not in set(self.state.selected_card_ids)]
+        remaining_hand = [card for card in self.state.hand if card.id not in selected_ids]
         self.state.discard_pile.extend(selected)
         self.state.hand = remaining_hand
         self.state.played_cards = []
-        self.state.selected_card_ids = []
         self.state.hands_remaining -= 1
         self._draw_to_hand()
 
@@ -411,12 +400,11 @@ class GameEngine:
             metrics.terminal_outcome = "loss"
             self._append_event("Run lost")
 
-    def _discard_selected(self, metrics: TransitionMetrics) -> None:
-        selected_ids = set(self.state.selected_card_ids)
+    def _discard_cards(self, card_ids: tuple[str, ...], metrics: TransitionMetrics) -> None:
+        selected_ids = set(card_ids)
         selected = [card for card in self.state.hand if card.id in selected_ids]
         self.state.hand = [card for card in self.state.hand if card.id not in selected_ids]
         self.state.discard_pile.extend(selected)
-        self.state.selected_card_ids = []
         self.state.discards_remaining -= 1
         metrics.discards_spent = 1
         self._draw_to_hand()
@@ -473,7 +461,6 @@ class GameEngine:
         self._advance_to_next_blind(metrics)
 
     def _advance_to_next_blind(self, metrics: TransitionMetrics) -> None:
-        self.state.selected_card_ids = []
         self.state.played_cards = []
         self.state.shop_inventory = []
         self.state.score = 0

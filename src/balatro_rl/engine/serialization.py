@@ -101,7 +101,6 @@ def game_state_from_dict(data: dict[str, Any]) -> GameState:
         hand=[Card(**card) for card in data["hand"]],
         discard_pile=[Card(**card) for card in data["discard_pile"]],
         played_cards=[Card(**card) for card in data["played_cards"]],
-        selected_card_ids=list(data["selected_card_ids"]),
         jokers=[JokerInstance(**joker) for joker in data["jokers"]],
         shop_inventory=[
             ShopItem(

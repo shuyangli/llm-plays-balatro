@@ -27,7 +27,7 @@ The package is organized into engine modules:
 - `rewards`: reward interface, registry, and built-in reward models
 - `env`: RL-facing wrappers and episode runner
 
-The canonical API exposes `EnvironmentConfig`, `Action`, `Observation`, `TransitionMetrics`, `RewardRegistry`, `RunSnapshot`, and `BalatroEnv`. The engine computes transition metrics first, then invokes the active reward model to obtain a scalar reward plus diagnostics.
+The canonical API exposes `EnvironmentConfig`, `Action`, `Observation`, `TransitionMetrics`, `RewardRegistry`, `RunSnapshot`, and `BalatroEnv`. The engine computes transition metrics first, then invokes the active reward model to obtain a scalar reward plus diagnostics. Public card interaction now uses direct set-based actions such as `play_hand(card_ids)` and `discard_cards(card_ids)` rather than incremental `select` / `deselect` primitives.
 
 For the vertical slice, blind start confirmation uses `noop` during the `blind_select` phase because the public action set intentionally stays small. That is an MVP compatibility choice and can later be replaced with a dedicated blind-start action if needed.
 

@@ -13,10 +13,16 @@ RANK_LABELS = {
     14: "A",
 }
 SUIT_LABELS = {
-    "spades": "S",
-    "hearts": "H",
     "clubs": "C",
     "diamonds": "D",
+    "hearts": "H",
+    "spades": "S",
+}
+SUIT_SORT_ORDER = {
+    "clubs": 0,
+    "diamonds": 1,
+    "hearts": 2,
+    "spades": 3,
 }
 
 
@@ -127,16 +133,19 @@ class TerminalUI:
         legal = self.env.legal_actions()
         if not legal:
             return "No legal actions."
-        lines = ["Legal actions:"]
-        for index, action in enumerate(legal, start=1):
+        preview_limit = 40
+        lines = [f"Legal actions: {len(legal)} total"]
+        for index, action in enumerate(legal[:preview_limit], start=1):
             lines.append(f"{index}. {self._format_action(action)}")
+        if len(legal) > preview_limit:
+            lines.append(f"... {len(legal) - preview_limit} more")
         return "\n".join(lines)
 
     def help_text(self) -> str:
         return (
             "Global commands: help, legal, reset, quit\n"
             "Blind select: start, skip\n"
-            "Round play: toggle <card>, select <card...>, deselect <card...>, play, discard\n"
+            "Round play: play <card...>, discard <card...>, tarot <consumable> <card...>\n"
             "Shop: buy <item>, sell <joker>, reroll, move <joker> <slot>, next\n"
             "Indices shown in the UI are 1-based."
         )
@@ -151,17 +160,13 @@ class TerminalUI:
     def _resolve_round_command(self, command: str) -> CommandResolution:
         parts = command.split()
         verb = parts[0]
-        if verb in {"play", "p"}:
-            return self._single_action("play_hand")
-        if verb in {"discard", "d"}:
-            return self._single_action("discard_selected")
-        if verb in {"toggle", "t"} and len(parts) >= 2:
-            return self._toggle_cards(parts[1:])
-        if verb == "select" and len(parts) >= 2:
-            return self._set_selection(parts[1:], target_selected=True)
-        if verb == "deselect" and len(parts) >= 2:
-            return self._set_selection(parts[1:], target_selected=False)
-        return CommandResolution(message="Round commands: toggle <card>, select <cards>, deselect <cards>, play, discard")
+        if verb in {"play", "p"} and len(parts) >= 2:
+            return self._card_set_action("play_hand", parts[1:])
+        if verb in {"discard", "d"} and len(parts) >= 2:
+            return self._card_set_action("discard_cards", parts[1:])
+        if verb == "tarot" and len(parts) >= 3:
+            return self._tarot_action(parts[1], parts[2:])
+        return CommandResolution(message="Round commands: play <cards>, discard <cards>, tarot <consumable> <cards>")
 
     def _resolve_shop_command(self, command: str) -> CommandResolution:
         parts = command.split()
@@ -184,45 +189,43 @@ class TerminalUI:
             return CommandResolution(message=f"No legal action available for {kind}.")
         return CommandResolution(actions=[action])
 
-    def _toggle_cards(self, indices: list[str]) -> CommandResolution:
+    def _card_set_action(self, kind: str, indices: list[str]) -> CommandResolution:
         observation = self.env.observe()
-        selected = set(observation.zones["selected_card_ids"])
-        actions: list[Action] = []
-        for index in self._parse_indices(indices, len(observation.zones["hand"])):
-            card = observation.zones["hand"][index]
-            kind = "deselect_card" if card["id"] in selected else "select_card"
-            action = self._match_card_action(kind, card["id"])
-            if action is None:
-                return CommandResolution(message=f"Card {index + 1} cannot be toggled right now.")
-            actions.append(action)
-            if kind == "select_card":
-                selected.add(card["id"])
-            else:
-                selected.remove(card["id"])
-        return CommandResolution(actions=actions)
+        display_hand = self._sorted_hand_cards(observation)
+        card_ids = [display_hand[index]["id"] for index in self._parse_indices(indices, len(display_hand))]
+        action = next(
+            (
+                candidate
+                for candidate in self.env.legal_actions()
+                if candidate.kind == kind and candidate.target_ids == tuple(sorted(card_ids))
+            ),
+            None,
+        )
+        if action is None:
+            return CommandResolution(message=f"Cards {', '.join(indices)} are not valid for {kind}.")
+        return CommandResolution(actions=[action])
 
-    def _set_selection(self, indices: list[str], target_selected: bool) -> CommandResolution:
+    def _tarot_action(self, consumable_index_text: str, card_indices: list[str]) -> CommandResolution:
         observation = self.env.observe()
-        selected = set(observation.zones["selected_card_ids"])
-        actions: list[Action] = []
-        for index in self._parse_indices(indices, len(observation.zones["hand"])):
-            card = observation.zones["hand"][index]
-            card_selected = card["id"] in selected
-            if target_selected and not card_selected:
-                action = self._match_card_action("select_card", card["id"])
-                if action is None:
-                    return CommandResolution(message=f"Card {index + 1} cannot be selected.")
-                actions.append(action)
-                selected.add(card["id"])
-            if not target_selected and card_selected:
-                action = self._match_card_action("deselect_card", card["id"])
-                if action is None:
-                    return CommandResolution(message=f"Card {index + 1} cannot be deselected.")
-                actions.append(action)
-                selected.remove(card["id"])
-        if not actions:
-            return CommandResolution(message="Selection already matches the requested state.")
-        return CommandResolution(actions=actions)
+        consumables = observation.zones["consumables"]
+        if not consumables:
+            return CommandResolution(message="No tarot consumables are available.")
+        consumable_index = self._parse_single_index(consumable_index_text, len(consumables))
+        display_hand = self._sorted_hand_cards(observation)
+        card_ids = [display_hand[index]["id"] for index in self._parse_indices(card_indices, len(display_hand))]
+        consumable_id = consumables[consumable_index]["id"]
+        action = next(
+            (
+                candidate
+                for candidate in self.env.legal_actions()
+                if candidate.kind == "apply_tarot"
+                and candidate.target_ids == tuple(sorted([consumable_id, *card_ids]))
+            ),
+            None,
+        )
+        if action is None:
+            return CommandResolution(message="That tarot action is not legal right now.")
+        return CommandResolution(actions=[action])
 
     def _shop_action(self, kind: str, index_text: str) -> CommandResolution:
         observation = self.env.observe()
@@ -268,12 +271,6 @@ class TerminalUI:
             return CommandResolution(message=f"Cannot move joker {source_index + 1} to slot {target_index + 1}.")
         return CommandResolution(actions=[action])
 
-    def _match_card_action(self, kind: str, card_id: str) -> Action | None:
-        return next(
-            (candidate for candidate in self.env.legal_actions() if candidate.kind == kind and candidate.target_ids == (card_id,)),
-            None,
-        )
-
     @staticmethod
     def _parse_indices(index_texts: list[str], upper_bound: int) -> list[int]:
         return [TerminalUI._parse_single_index(text, upper_bound) for text in index_texts]
@@ -291,11 +288,9 @@ class TerminalUI:
         return index
 
     def _render_hand(self, observation: Observation) -> str:
-        selected = set(observation.zones["selected_card_ids"])
         pieces = []
-        for index, card in enumerate(observation.zones["hand"], start=1):
-            marker = "*" if card["id"] in selected else " "
-            pieces.append(f"{index}:{marker}{self._format_card(card)}")
+        for index, card in enumerate(self._sorted_hand_cards(observation), start=1):
+            pieces.append(f"{index}:{self._format_card(card)}")
         return "Hand: " + (" ".join(pieces) if pieces else "(empty)")
 
     def _render_jokers(self, observation: Observation) -> str:
@@ -331,10 +326,17 @@ class TerminalUI:
         if phase == "blind_select":
             return "Commands: start, skip, legal, reset, quit"
         if phase == "round_play":
-            return "Commands: toggle <card>, select <card...>, deselect <card...>, play, discard"
+            return "Commands: play <card...>, discard <card...>, tarot <consumable> <card...>"
         if phase == "shop":
             return "Commands: buy <item>, sell <joker>, move <joker> <slot>, reroll, next"
         return "Commands: reset, quit"
+
+    @staticmethod
+    def _sorted_hand_cards(observation: Observation) -> list[dict[str, object]]:
+        return sorted(
+            observation.zones["hand"],
+            key=lambda card: (int(card["rank"]), SUIT_SORT_ORDER[str(card["suit"])], str(card["id"])),
+        )
 
     @staticmethod
     def _format_card(card: dict[str, object]) -> str:
