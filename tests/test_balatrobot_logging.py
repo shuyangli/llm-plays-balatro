@@ -33,9 +33,10 @@ class BalatroBotLoggingTest(unittest.TestCase):
             path = Path(temp_dir) / "run.jsonl"
             logger = RunLogger(path)
             config = BotConfig(
-                model="gpt-5-mini",
+                gateway_url="http://localhost:3000",
+                function_name="balatro_next_command",
                 deck="Red Deck",
-                stake=1,
+                stake="WHITE",
                 seed=None,
                 max_turns=10,
                 port=12346,
@@ -48,10 +49,19 @@ class BalatroBotLoggingTest(unittest.TestCase):
                     "turn": 2,
                     "attempt": 1,
                     "state": "SHOP",
-                    "model": config.model,
+                    "gateway_url": config.gateway_url,
+                    "function_name": config.function_name,
                     "input": [
-                        {"role": "system", "content": "system prompt"},
-                        {"role": "user", "content": '{"state":"SHOP"}'},
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tensorzero::template",
+                                    "name": "turn_context",
+                                    "arguments": {"state_name": "SHOP"},
+                                }
+                            ],
+                        }
                     ],
                 },
             )
@@ -61,8 +71,13 @@ class BalatroBotLoggingTest(unittest.TestCase):
                     "turn": 2,
                     "attempt": 1,
                     "state": "SHOP",
-                    "model": config.model,
-                    "output": '{"name":"reroll","arguments":{}}',
+                    "gateway_url": config.gateway_url,
+                    "function_name": config.function_name,
+                    "model": "tensorzero::function_name::balatro_next_command",
+                    "id": "resp_123",
+                    "output_raw": '{"name":"reroll","arguments":{}}',
+                    "output_parsed": {"name": "reroll", "arguments": {}},
+                    "response": {"id": "resp_123"},
                 },
             )
 
@@ -70,10 +85,10 @@ class BalatroBotLoggingTest(unittest.TestCase):
                 json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
             ]
             self.assertEqual(["model_input", "model_output"], [r["event"] for r in records])
-            self.assertEqual("system", records[0]["input"][0]["role"])
+            self.assertEqual("user", records[0]["input"][0]["role"])
             self.assertEqual(
                 '{"name":"reroll","arguments":{}}',
-                records[1]["output"],
+                records[1]["output_raw"],
             )
 
 

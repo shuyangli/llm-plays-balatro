@@ -72,7 +72,8 @@ DECK_NAME_TO_CODE = {
 
 @dataclass(slots=True)
 class BotConfig:
-    model: str
+    gateway_url: str
+    function_name: str
     deck: str
     stake: str
     seed: str | None
@@ -124,42 +125,6 @@ def allowed_calls_for_state(game_state: dict[str, Any]) -> tuple[str, ...]:
         raise ValueError(
             f"No allowed calls configured for state {state_name!r}."
         ) from error
-
-
-def _find_first_json_object(text: str) -> str:
-    start = text.find("{")
-    if start == -1:
-        raise ValueError("Model response did not contain a JSON object.")
-
-    depth = 0
-    in_string = False
-    escape = False
-    for index in range(start, len(text)):
-        char = text[index]
-        if in_string:
-            if escape:
-                escape = False
-            elif char == "\\":
-                escape = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start : index + 1]
-    raise ValueError("Model response contained an unterminated JSON object.")
-
-
-def parse_model_command(text: str) -> dict[str, Any]:
-    payload = json.loads(_find_first_json_object(text))
-    if not isinstance(payload, dict):
-        raise ValueError("Model response JSON must be an object.")
-    return payload
 
 
 def _require_string(value: Any, *, field_name: str) -> str:
@@ -259,64 +224,98 @@ def validate_command(
     raise ValueError(f"Validation is not implemented for call {name!r}.")
 
 
-def build_turn_prompt(
+def build_inference_input(
     game_state: dict[str, Any], config: BotConfig, previous_error: str | None
-) -> str:
-    allowed_calls = allowed_calls_for_state(game_state)
-    prompt = {
-        "objective": "Choose the single best next BalatroBot API call for this turn.",
-        "constraints": [
-            "Return exactly one JSON object and no surrounding prose.",
-            "Use one of the allowed function names for the current state.",
-            "Card and shop indices are 0-based.",
-            "Do not invent fields beyond name and arguments.",
-            "Prefer legal, conservative actions over risky guesses.",
-        ],
-        "run_defaults": {
-            "deck": normalize_deck(config.deck, field_name="config.deck"),
-            "stake": normalize_stake(config.stake, field_name="config.stake"),
-            "seed": config.seed,
-        },
-        "allowed_calls": allowed_calls,
-        "response_shape": {
-            "name": "BalatroBot function name",
-            "arguments": {"field": "value"},
-        },
-        "examples": [
-            {
-                "name": "start",
-                "arguments": {
-                    "deck": normalize_deck(config.deck, field_name="config.deck"),
-                    "stake": normalize_stake(config.stake, field_name="config.stake"),
-                    "seed": config.seed,
-                },
-            },
-            {"name": "select", "arguments": {}},
-            {"name": "play", "arguments": {"cards": [0, 1, 2, 3, 4]}},
-            {"name": "next_round", "arguments": {}},
-        ],
-        "previous_error": previous_error,
-        "game_state": game_state,
+) -> list[dict[str, Any]]:
+    state_name = normalize_state_name(game_state)
+    run_defaults = {
+        "deck": normalize_deck(config.deck, field_name="config.deck"),
+        "stake": normalize_stake(config.stake, field_name="config.stake"),
+        "seed": config.seed,
     }
-    return json.dumps(prompt, sort_keys=True)
-
-
-def build_model_input(
-    game_state: dict[str, Any], config: BotConfig, previous_error: str | None
-) -> list[dict[str, str]]:
     return [
         {
-            "role": "system",
-            "content": (
-                "You are controlling a BalatroBot client. "
-                "Reply with exactly one JSON object containing `name` and `arguments`."
-            ),
-        },
-        {
             "role": "user",
-            "content": build_turn_prompt(game_state, config, previous_error),
-        },
+            "content": [
+                {
+                    "type": "tensorzero::template",
+                    "name": "turn_context",
+                    "arguments": {
+                        "state_name": state_name,
+                        "allowed_calls_json": json.dumps(
+                            allowed_calls_for_state(game_state), sort_keys=True
+                        ),
+                        "run_defaults_json": json.dumps(run_defaults, sort_keys=True),
+                        "game_state_json": json.dumps(game_state, sort_keys=True),
+                        "previous_error": previous_error,
+                    },
+                }
+            ],
+        }
     ]
+
+
+def request_tensorzero_inference(
+    gateway_url: str, function_name: str, inference_input: list[dict[str, Any]]
+) -> tuple[str, dict[str, Any]]:
+    from openai import OpenAI
+
+    client = OpenAI(
+        base_url=f"{gateway_url.rstrip('/')}/openai/v1",
+        api_key="tensorzero",
+    )
+    response = client.chat.completions.create(
+        model=f"tensorzero::function_name::{function_name}",
+        messages=inference_input,
+    )
+    raw_output = response.choices[0].message.content
+    if not isinstance(raw_output, str):
+        raise ValueError("TensorZero response did not include text output.")
+    return raw_output, response.model_dump(mode="json")
+
+
+def _find_first_json_object(text: str) -> str:
+    start = text.find("{")
+    if start == -1:
+        raise ValueError("Model response did not contain a JSON object.")
+
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    raise ValueError("Model response contained an unterminated JSON object.")
+
+
+def parse_model_command(text: str) -> dict[str, Any]:
+    payload = json.loads(_find_first_json_object(text))
+    if not isinstance(payload, dict):
+        raise ValueError("Model response JSON must be an object.")
+    return payload
+
+
+def extract_tensorzero_output(
+    raw_output: str, response_payload: dict[str, Any]
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    if not isinstance(response_payload, dict):
+        raise ValueError("TensorZero response payload must be a JSON object.")
+    return raw_output, parse_model_command(raw_output), response_payload
 
 
 def choose_command(
@@ -329,9 +328,7 @@ def choose_command(
     attempt: int | None = None,
     state_name: str | None = None,
 ) -> tuple[str, dict[str, Any], str]:
-    from openai import OpenAI
-
-    model_input = build_model_input(game_state, config, previous_error)
+    inference_input = build_inference_input(game_state, config, previous_error)
     if logger is not None:
         logger.log(
             "model_input",
@@ -339,18 +336,21 @@ def choose_command(
                 "turn": turn,
                 "attempt": attempt,
                 "state": state_name,
-                "model": config.model,
-                "input": model_input,
+                "gateway_url": config.gateway_url,
+                "function_name": config.function_name,
+                "input": inference_input,
                 "previous_error": previous_error,
             },
         )
 
-    client = OpenAI()
-    response = client.responses.create(
-        model=config.model,
-        input=model_input,
+    raw_output, response_payload = request_tensorzero_inference(
+        config.gateway_url,
+        config.function_name,
+        inference_input,
     )
-    raw_output = response.output_text
+    raw_output, parsed_output, raw_response = extract_tensorzero_output(
+        raw_output, response_payload
+    )
     if logger is not None:
         logger.log(
             "model_output",
@@ -358,12 +358,17 @@ def choose_command(
                 "turn": turn,
                 "attempt": attempt,
                 "state": state_name,
-                "model": config.model,
-                "output": raw_output,
+                "gateway_url": config.gateway_url,
+                "function_name": config.function_name,
+                "model": raw_response.get("model"),
+                "id": raw_response.get("id"),
+                "usage": raw_response.get("usage"),
+                "output_raw": raw_output,
+                "output_parsed": parsed_output,
+                "response": raw_response,
             },
         )
-    parsed = parse_model_command(raw_output)
-    name, arguments = validate_command(parsed, game_state)
+    name, arguments = validate_command(parsed_output, game_state)
     return name, arguments, raw_output
 
 
@@ -374,7 +379,8 @@ def run_bot(config: BotConfig) -> None:
     logger.log(
         "run_started",
         {
-            "model": config.model,
+            "gateway_url": config.gateway_url,
+            "function_name": config.function_name,
             "deck": config.deck,
             "stake": config.stake,
             "seed": config.seed,
@@ -402,15 +408,29 @@ def run_bot(config: BotConfig) -> None:
             return
 
         for attempt in range(3):
-            name, arguments, raw_output = choose_command(
-                game_state,
-                config,
-                previous_error,
-                logger=logger,
-                turn=turn_index + 1,
-                attempt=attempt + 1,
-                state_name=state_name,
-            )
+            try:
+                name, arguments, raw_output = choose_command(
+                    game_state,
+                    config,
+                    previous_error,
+                    logger=logger,
+                    turn=turn_index + 1,
+                    attempt=attempt + 1,
+                    state_name=state_name,
+                )
+            except ValueError as error:
+                previous_error = str(error)
+                logger.log(
+                    "model_error",
+                    {
+                        "turn": turn_index + 1,
+                        "attempt": attempt + 1,
+                        "state": state_name,
+                        "error": previous_error,
+                    },
+                )
+                print(f"[model-error] {previous_error}")
+                continue
             logger.log(
                 "model_choice",
                 {
@@ -474,10 +494,17 @@ def run_bot(config: BotConfig) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run a BalatroBot client driven by the OpenAI Responses API."
+        description="Run a BalatroBot client driven by the TensorZero inference API."
     )
     parser.add_argument(
-        "--model", default="gpt-5.4-mini-2026-03-17", help="OpenAI model name to use."
+        "--gateway-url",
+        default="http://localhost:3000",
+        help="TensorZero gateway base URL.",
+    )
+    parser.add_argument(
+        "--function-name",
+        default="balatro_next_command",
+        help="TensorZero function name to call.",
     )
     parser.add_argument("--deck", default="Red Deck", help="Deck name for start_run.")
     parser.add_argument("--stake", default="WHITE", help="Stake name for start_run.")
@@ -496,7 +523,8 @@ def main() -> None:
     args = parser.parse_args()
 
     config = BotConfig(
-        model=args.model,
+        gateway_url=args.gateway_url,
+        function_name=args.function_name,
         deck=args.deck,
         stake=args.stake,
         seed=args.seed,
