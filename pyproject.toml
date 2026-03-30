@@ -2,7 +2,11 @@
 name = "balatro-rl"
 version = "0.1.0"
 description = "Deterministic Balatro-like RL environment for LLMs."
-requires-python = ">=3.12"
+requires-python = ">=3.13"
+dependencies = [
+    "balatrobot",
+    "openai",
+]
 
 [project.scripts]
 balatro-rl-tui = "balatro_rl.tui:main"
