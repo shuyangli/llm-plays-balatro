@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "Deterministic Balatro-like RL environment for LLMs."
 requires-python = ">=3.12"
 
+[project.scripts]
+balatro-rl-tui = "balatro_rl.tui:main"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

@@ -2,7 +2,7 @@
 
 - Owner: shuyangli
 - Last updated: 2026-03-29
-- Current status: complete for the first vertical slice; the Python package, deterministic engine core, reward registry, snapshots/replay, RL wrappers, and validation tests are implemented. Immediate next action: expand content and rules toward closer Balatro parity without changing the environment contract.
+- Current status: complete for the first vertical slice; the Python package, deterministic engine core, reward registry, snapshots/replay, RL wrappers, validation tests, and a local human-play terminal UI are implemented. Immediate next action: expand content and rules toward closer Balatro parity without changing the environment contract.
 
 ## Motivation
 
