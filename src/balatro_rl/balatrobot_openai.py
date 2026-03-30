@@ -25,12 +25,56 @@ STATE_VALUE_TO_NAME = {
     11: "MENU",
 }
 
+VALID_STAKES = {
+    "WHITE",
+    "RED",
+    "GREEN",
+    "BLACK",
+    "BLUE",
+    "PURPLE",
+    "ORANGE",
+    "GOLD",
+}
+
+DECK_NAME_TO_CODE = {
+    "red": "RED",
+    "red deck": "RED",
+    "blue": "BLUE",
+    "blue deck": "BLUE",
+    "yellow": "YELLOW",
+    "yellow deck": "YELLOW",
+    "green": "GREEN",
+    "green deck": "GREEN",
+    "black": "BLACK",
+    "black deck": "BLACK",
+    "magic": "MAGIC",
+    "magic deck": "MAGIC",
+    "nebula": "NEBULA",
+    "nebula deck": "NEBULA",
+    "ghost": "GHOST",
+    "ghost deck": "GHOST",
+    "abandoned": "ABANDONED",
+    "abandoned deck": "ABANDONED",
+    "checkered": "CHECKERED",
+    "checkered deck": "CHECKERED",
+    "zodiac": "ZODIAC",
+    "zodiac deck": "ZODIAC",
+    "painted": "PAINTED",
+    "painted deck": "PAINTED",
+    "anaglyph": "ANAGLYPH",
+    "anaglyph deck": "ANAGLYPH",
+    "plasma": "PLASMA",
+    "plasma deck": "PLASMA",
+    "erratic": "ERRATIC",
+    "erratic deck": "ERRATIC",
+}
+
 
 @dataclass(slots=True)
 class BotConfig:
     model: str
     deck: str
-    stake: int
+    stake: str
     seed: str | None
     max_turns: int
     port: int
@@ -130,6 +174,26 @@ def _require_int(value: Any, *, field_name: str) -> int:
     return value
 
 
+def normalize_stake(value: Any, *, field_name: str) -> str:
+    if isinstance(value, str) and value:
+        normalized = value.strip().upper()
+        if normalized in VALID_STAKES:
+            return normalized
+    raise ValueError(f"Expected stake string for {field_name}.")
+
+
+def normalize_deck(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Expected non-empty string for {field_name}.")
+    normalized = value.strip().upper()
+    if normalized in DECK_NAME_TO_CODE.values():
+        return normalized
+    try:
+        return DECK_NAME_TO_CODE[value.strip().lower()]
+    except KeyError as error:
+        raise ValueError(f"Unsupported deck name for {field_name}: {value!r}.") from error
+
+
 def _require_index_list(
     value: Any, *, field_name: str, min_size: int, max_size: int | None = None
 ) -> list[int]:
@@ -159,8 +223,8 @@ def validate_command(
         raise ValueError("Expected 'arguments' to be an object.")
 
     if name == "start":
-        deck = _require_string(arguments.get("deck"), field_name="arguments.deck")
-        stake = _require_int(arguments.get("stake"), field_name="arguments.stake")
+        deck = normalize_deck(arguments.get("deck"), field_name="arguments.deck")
+        stake = normalize_stake(arguments.get("stake"), field_name="arguments.stake")
         validated: dict[str, Any] = {"deck": deck, "stake": stake}
         if "seed" in arguments and arguments["seed"] is not None:
             validated["seed"] = _require_string(
@@ -207,8 +271,8 @@ def build_turn_prompt(
             "Prefer legal, conservative actions over risky guesses.",
         ],
         "run_defaults": {
-            "deck": config.deck,
-            "stake": config.stake,
+            "deck": normalize_deck(config.deck, field_name="config.deck"),
+            "stake": normalize_stake(config.stake, field_name="config.stake"),
             "seed": config.seed,
         },
         "allowed_calls": allowed_calls,
@@ -220,8 +284,8 @@ def build_turn_prompt(
             {
                 "name": "start",
                 "arguments": {
-                    "deck": config.deck,
-                    "stake": config.stake,
+                    "deck": normalize_deck(config.deck, field_name="config.deck"),
+                    "stake": normalize_stake(config.stake, field_name="config.stake"),
                     "seed": config.seed,
                 },
             },
@@ -235,29 +299,67 @@ def build_turn_prompt(
     return json.dumps(prompt, sort_keys=True)
 
 
-def choose_command(
+def build_model_input(
     game_state: dict[str, Any], config: BotConfig, previous_error: str | None
+) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are controlling a BalatroBot client. "
+                "Reply with exactly one JSON object containing `name` and `arguments`."
+            ),
+        },
+        {
+            "role": "user",
+            "content": build_turn_prompt(game_state, config, previous_error),
+        },
+    ]
+
+
+def choose_command(
+    game_state: dict[str, Any],
+    config: BotConfig,
+    previous_error: str | None,
+    *,
+    logger: RunLogger | None = None,
+    turn: int | None = None,
+    attempt: int | None = None,
+    state_name: str | None = None,
 ) -> tuple[str, dict[str, Any], str]:
     from openai import OpenAI
+
+    model_input = build_model_input(game_state, config, previous_error)
+    if logger is not None:
+        logger.log(
+            "model_input",
+            {
+                "turn": turn,
+                "attempt": attempt,
+                "state": state_name,
+                "model": config.model,
+                "input": model_input,
+                "previous_error": previous_error,
+            },
+        )
 
     client = OpenAI()
     response = client.responses.create(
         model=config.model,
-        input=[
-            {
-                "role": "system",
-                "content": (
-                    "You are controlling a BalatroBot client. "
-                    "Reply with exactly one JSON object containing `name` and `arguments`."
-                ),
-            },
-            {
-                "role": "user",
-                "content": build_turn_prompt(game_state, config, previous_error),
-            },
-        ],
+        input=model_input,
     )
     raw_output = response.output_text
+    if logger is not None:
+        logger.log(
+            "model_output",
+            {
+                "turn": turn,
+                "attempt": attempt,
+                "state": state_name,
+                "model": config.model,
+                "output": raw_output,
+            },
+        )
     parsed = parse_model_command(raw_output)
     name, arguments = validate_command(parsed, game_state)
     return name, arguments, raw_output
@@ -299,7 +401,13 @@ def run_bot(config: BotConfig) -> None:
 
         for attempt in range(3):
             name, arguments, raw_output = choose_command(
-                game_state, config, previous_error
+                game_state,
+                config,
+                previous_error,
+                logger=logger,
+                turn=turn_index + 1,
+                attempt=attempt + 1,
+                state_name=state_name,
             )
             logger.log(
                 "model_choice",
@@ -371,7 +479,7 @@ def main() -> None:
     )
     parser.add_argument("--deck", default="Red Deck", help="Deck name for start_run.")
     parser.add_argument(
-        "--stake", type=int, default=1, help="Stake level for start_run."
+        "--stake", default="WHITE", help="Stake name for start_run."
     )
     parser.add_argument(
         "--seed", default=None, help="Optional Balatro seed for reproducible runs."
