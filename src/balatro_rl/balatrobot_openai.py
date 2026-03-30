@@ -191,7 +191,9 @@ def normalize_deck(value: Any, *, field_name: str) -> str:
     try:
         return DECK_NAME_TO_CODE[value.strip().lower()]
     except KeyError as error:
-        raise ValueError(f"Unsupported deck name for {field_name}: {value!r}.") from error
+        raise ValueError(
+            f"Unsupported deck name for {field_name}: {value!r}."
+        ) from error
 
 
 def _require_index_list(
@@ -464,10 +466,10 @@ def run_bot(config: BotConfig) -> None:
             raise RuntimeError(
                 f"Failed to produce a valid API call after 3 attempts in state {state_name}."
             )
-        logger.log(
-            "run_finished", {"turn": config.max_turns, "reason": "max_turns_reached"}
-        )
-        raise RuntimeError(f"Stopped after hitting max_turns={config.max_turns}.")
+    logger.log(
+        "run_finished", {"turn": config.max_turns, "reason": "max_turns_reached"}
+    )
+    raise RuntimeError(f"Stopped after hitting max_turns={config.max_turns}.")
 
 
 def main() -> None:
@@ -475,18 +477,16 @@ def main() -> None:
         description="Run a BalatroBot client driven by the OpenAI Responses API."
     )
     parser.add_argument(
-        "--model", default="gpt-5-mini", help="OpenAI model name to use."
+        "--model", default="gpt-5.4-mini-2026-03-17", help="OpenAI model name to use."
     )
     parser.add_argument("--deck", default="Red Deck", help="Deck name for start_run.")
-    parser.add_argument(
-        "--stake", default="WHITE", help="Stake name for start_run."
-    )
+    parser.add_argument("--stake", default="WHITE", help="Stake name for start_run.")
     parser.add_argument(
         "--seed", default=None, help="Optional Balatro seed for reproducible runs."
     )
     parser.add_argument("--port", type=int, default=12346, help="BalatroBot TCP port.")
     parser.add_argument(
-        "--max-turns", type=int, default=250, help="Maximum API turns before aborting."
+        "--max-turns", type=int, default=5000, help="Maximum API turns before aborting."
     )
     parser.add_argument(
         "--log-dir",
