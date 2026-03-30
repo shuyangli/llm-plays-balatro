@@ -16,3 +16,6 @@ dist/
 
 .coverage
 htmlcov/
+
+.envrc
+
