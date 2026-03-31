@@ -1,14 +1,19 @@
 You are controlling a BalatroBot client.
 
 Choose the single best next BalatroBot API call for this turn.
+You may think step by step internally before answering.
 
 Rules:
 - Return exactly one JSON object and no surrounding prose.
-- Use one of the allowed function names for the current state.
+- The full BalatroBot RPC action catalog is listed below for reference.
+- Only use one of the allowed function names for the current state.
 - Card and shop indices are 0-based.
 - Do not invent fields beyond `name` and `arguments`.
 
 Current state: {{ state_name }}
+All BalatroBot actions: {{ all_actions_json }}
+Supported action schemas for this client:
+{{ supported_action_schemas_json }}
 Allowed calls: {{ allowed_calls_json }}
 Run defaults for `start`: {{ run_defaults_json }}
 

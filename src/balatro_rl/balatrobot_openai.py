@@ -13,7 +13,66 @@ STATE_TO_CALLS: dict[str, tuple[str, ...]] = {
     "SELECTING_HAND": ("play", "discard"),
     "ROUND_EVAL": ("cash_out",),
     "SHOP": ("buy", "reroll", "next_round"),
+    "SMODS_BOOSTER_OPENED": ("pack",),
     "GAME_OVER": ("menu",),
+}
+
+ALL_BALATROBOT_ACTIONS: tuple[str, ...] = (
+    "add",
+    "buy",
+    "cash_out",
+    "discard",
+    "gamestate",
+    "health",
+    "load",
+    "menu",
+    "next_round",
+    "pack",
+    "play",
+    "rearrange",
+    "reroll",
+    "save",
+    "screenshot",
+    "select",
+    "sell",
+    "set",
+    "skip",
+    "start",
+    "use",
+)
+
+SUPPORTED_ACTION_SCHEMAS: dict[str, Any] = {
+    "start": {
+        "arguments": {
+            "deck": "string",
+            "stake": "string",
+            "seed": "string | null",
+            "challenge": "string | null",
+            "log_path": "string | null",
+        }
+    },
+    "select": {"arguments": {}},
+    "skip": {"arguments": {}},
+    "play": {"arguments": {"cards": "list[int] (1-5 cards)"}},
+    "discard": {"arguments": {"cards": "list[int] (1-5 cards)"}},
+    "cash_out": {"arguments": {}},
+    "buy": {
+        "arguments": {
+            "card": "int | null",
+            "voucher": "int | null",
+            "pack": "int | null",
+        },
+        "rule": "Provide exactly one of card, voucher, or pack.",
+    },
+    "pack": {
+        "arguments": {
+            "card": "int | null",
+        },
+        "rule": "Provide the 0-based index of the chosen booster card.",
+    },
+    "reroll": {"arguments": {}},
+    "next_round": {"arguments": {}},
+    "menu": {"arguments": {}},
 }
 
 STATE_VALUE_TO_NAME = {
@@ -139,6 +198,20 @@ def _require_int(value: Any, *, field_name: str) -> int:
     return value
 
 
+def _require_exactly_one_index(
+    arguments: dict[str, Any], *, field_names: tuple[str, ...]
+) -> dict[str, int]:
+    present = {
+        field_name: _require_int(arguments.get(field_name), field_name=f"arguments.{field_name}")
+        for field_name in field_names
+        if arguments.get(field_name) is not None
+    }
+    if len(present) != 1:
+        joined = ", ".join(f"arguments.{field_name}" for field_name in field_names)
+        raise ValueError(f"Expected exactly one of: {joined}.")
+    return present
+
+
 def normalize_stake(value: Any, *, field_name: str) -> str:
     if isinstance(value, str) and value:
         normalized = value.strip().upper()
@@ -217,9 +290,12 @@ def validate_command(
         return name, {"cards": cards}
 
     if name == "buy":
-        return name, {
-            "index": _require_int(arguments.get("index"), field_name="arguments.index")
-        }
+        return name, _require_exactly_one_index(
+            arguments, field_names=("card", "voucher", "pack")
+        )
+
+    if name == "pack":
+        return name, _require_exactly_one_index(arguments, field_names=("card",))
 
     raise ValueError(f"Validation is not implemented for call {name!r}.")
 
@@ -242,6 +318,12 @@ def build_inference_input(
                     "name": "turn_context",
                     "arguments": {
                         "state_name": state_name,
+                        "all_actions_json": json.dumps(
+                            ALL_BALATROBOT_ACTIONS, sort_keys=True
+                        ),
+                        "supported_action_schemas_json": json.dumps(
+                            SUPPORTED_ACTION_SCHEMAS, sort_keys=True
+                        ),
                         "allowed_calls_json": json.dumps(
                             allowed_calls_for_state(game_state), sort_keys=True
                         ),
@@ -423,6 +505,8 @@ def run_bot(config: BotConfig) -> None:
             print("Game over.")
             return
 
+        refresh_state = False
+        command_succeeded = False
         for attempt in range(3):
             try:
                 name, arguments, raw_output, response_episode_id = choose_command(
@@ -481,6 +565,7 @@ def run_bot(config: BotConfig) -> None:
                     },
                 )
                 previous_error = None
+                command_succeeded = True
                 break
             except Exception as error:  # pragma: no cover
                 previous_error = str(error)
@@ -496,6 +581,24 @@ def run_bot(config: BotConfig) -> None:
                     },
                 )
                 print(f"[api-error] {previous_error}")
+                if previous_error.startswith("INVALID_STATE:"):
+                    refresh_state = True
+                    previous_error = None
+                    logger.log(
+                        "state_refresh_requested",
+                        {
+                            "turn": turn_index + 1,
+                            "attempt": attempt + 1,
+                            "episode_id": episode_id,
+                            "state": state_name,
+                            "reason": "invalid_state",
+                        },
+                    )
+                    break
+        if refresh_state:
+            continue
+        if command_succeeded:
+            continue
         else:
             logger.log(
                 "run_finished",

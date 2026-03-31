@@ -5,6 +5,12 @@
     "state_name": {
       "type": "string"
     },
+    "all_actions_json": {
+      "type": "string"
+    },
+    "supported_action_schemas_json": {
+      "type": "string"
+    },
     "allowed_calls_json": {
       "type": "string"
     },
@@ -20,6 +26,8 @@
   },
   "required": [
     "state_name",
+    "all_actions_json",
+    "supported_action_schemas_json",
     "allowed_calls_json",
     "run_defaults_json",
     "game_state_json",

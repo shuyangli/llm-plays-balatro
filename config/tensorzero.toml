@@ -6,13 +6,11 @@ type = "openai"
 model_name = "gpt-5.4-mini-2026-03-17"
 
 [functions.balatro_next_command]
-type = "json"
-output_schema = "functions/balatro_next_command/output_schema.json"
+type = "chat"
 schemas.turn_context.path = "functions/balatro_next_command/turn_context_schema.json"
 
 [functions.balatro_next_command.variants.default]
 type = "chat_completion"
 model = "gpt_5_4_mini"
-json_mode = "on"
-temperature = 0.0
+reasoning_effort = "high"
 templates.turn_context.path = "functions/balatro_next_command/default/turn_context.minijinja"

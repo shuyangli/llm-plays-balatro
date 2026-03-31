@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from balatro_rl.balatrobot_openai import (
+    ALL_BALATROBOT_ACTIONS,
     BotConfig,
+    SUPPORTED_ACTION_SCHEMAS,
     allowed_calls_for_state,
     build_inference_input,
     extract_tensorzero_output,
     normalize_state_name,
+    run_bot,
     validate_command,
 )
 
@@ -33,6 +39,14 @@ class BalatroBotOpenAITest(unittest.TestCase):
         self.assertEqual("tensorzero::template", content["type"])
         self.assertEqual("turn_context", content["name"])
         self.assertEqual("SHOP", content["arguments"]["state_name"])
+        self.assertEqual(
+            ALL_BALATROBOT_ACTIONS,
+            tuple(json.loads(content["arguments"]["all_actions_json"])),
+        )
+        self.assertEqual(
+            SUPPORTED_ACTION_SCHEMAS,
+            json.loads(content["arguments"]["supported_action_schemas_json"]),
+        )
         self.assertEqual("bad output", content["arguments"]["previous_error"])
         self.assertIn('"deck": "RED"', content["arguments"]["run_defaults_json"])
 
@@ -54,6 +68,12 @@ class BalatroBotOpenAITest(unittest.TestCase):
             allowed_calls_for_state({"state": "BLIND_SELECT"}),
         )
 
+    def test_allowed_calls_for_open_booster_state(self) -> None:
+        self.assertEqual(
+            ("pack",),
+            allowed_calls_for_state({"state": "SMODS_BOOSTER_OPENED"}),
+        )
+
     def test_validate_play_command(self) -> None:
         name, arguments = validate_command(
             {
@@ -65,12 +85,28 @@ class BalatroBotOpenAITest(unittest.TestCase):
         self.assertEqual("play", name)
         self.assertEqual({"cards": [0, 2, 4]}, arguments)
 
-    def test_validate_buy_requires_index(self) -> None:
-        with self.assertRaisesRegex(ValueError, "arguments.index"):
+    def test_validate_buy_requires_one_shop_target(self) -> None:
+        with self.assertRaisesRegex(ValueError, "arguments.card"):
             validate_command(
                 {"name": "buy", "arguments": {}},
                 {"state": "SHOP"},
             )
+
+    def test_validate_buy_accepts_card_target(self) -> None:
+        name, arguments = validate_command(
+            {"name": "buy", "arguments": {"card": 1}},
+            {"state": "SHOP"},
+        )
+        self.assertEqual("buy", name)
+        self.assertEqual({"card": 1}, arguments)
+
+    def test_validate_pack_accepts_card_target(self) -> None:
+        name, arguments = validate_command(
+            {"name": "pack", "arguments": {"card": 0}},
+            {"state": "SMODS_BOOSTER_OPENED"},
+        )
+        self.assertEqual("pack", name)
+        self.assertEqual({"card": 0}, arguments)
 
     def test_validate_start_normalizes_human_friendly_values(self) -> None:
         name, arguments = validate_command(
@@ -85,6 +121,55 @@ class BalatroBotOpenAITest(unittest.TestCase):
             {"deck": "RED", "stake": "WHITE", "seed": "ABC123"},
             arguments,
         )
+
+    def test_run_bot_continues_after_successful_first_attempt(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config = BotConfig(
+                gateway_url="http://localhost:3000",
+                function_name="balatro_next_command",
+                deck="Red Deck",
+                stake="WHITE",
+                seed=None,
+                max_turns=2,
+                port=12346,
+                log_dir=Path(temp_dir),
+            )
+            game_states = [
+                {"state": "SELECTING_HAND"},
+                {"state": "GAME_OVER"},
+            ]
+            api_results = [
+                {"state": "ROUND_EVAL"},
+            ]
+
+            class FakeBalatroClient:
+                def __init__(self, *, port: int) -> None:
+                    self.port = port
+                    self._game_states = list(game_states)
+                    self._api_results = list(api_results)
+
+                def call(self, name: str, arguments: dict | None = None) -> dict:
+                    if name == "gamestate":
+                        return self._game_states.pop(0)
+                    self.assertEqual("play", name)
+                    self.assertEqual({"cards": [0, 1]}, arguments)
+                    return self._api_results.pop(0)
+
+                def assertEqual(self, expected: object, actual: object) -> None:
+                    testcase.assertEqual(expected, actual)
+
+            testcase = self
+            with patch("balatro_rl.balatrobot_openai.choose_command") as choose_command:
+                choose_command.return_value = (
+                    "play",
+                    {"cards": [0, 1]},
+                    '{"name":"play","arguments":{"cards":[0,1]}}',
+                    "episode-123",
+                )
+                with patch("balatrobot.cli.client.BalatroClient", FakeBalatroClient):
+                    run_bot(config)
+
+            choose_command.assert_called_once()
 
 
 if __name__ == "__main__":
