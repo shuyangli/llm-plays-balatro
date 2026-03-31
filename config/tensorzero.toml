@@ -19,7 +19,7 @@ templates.turn_context.path = "functions/balatro_next_command/default/turn_conte
 type = "chat_completion"
 model = "gpt_5_4_mini"
 reasoning_effort = "high"
-templates = { turn_context = { path = "functions/balatro_next_command/variants/strategy_v1/templates/turn_context.minijinja" }, system = { path = "functions/balatro_next_command/variants/strategy_v1/templates/system.minijinja" } }
+templates = { system = { path = "functions/balatro_next_command/variants/strategy_v1/templates/system.minijinja" }, turn_context = { path = "functions/balatro_next_command/variants/strategy_v1/templates/turn_context.minijinja" } }
 
 [functions.balatro_next_command.experimentation]
 type = "uniform"

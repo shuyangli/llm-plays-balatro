@@ -1,22 +1,14 @@
 Current state: {{ state_name }}
-Allowed calls: {{ allowed_calls_json }}
-All BalatroBot actions (reference): {{ all_actions_json }}
-Supported action schemas:
-{{ supported_action_schemas_json }}
-Run defaults for `start`: {{ run_defaults_json }}
+Allowed calls for this turn: {{ allowed_calls_json }}
 
 {% if previous_error %}
-⚠️ Previous error: {{ previous_error }}
+Previous error from the last attempt:
+{{ previous_error }}
+{% else %}
+Previous error from the last attempt: none
 {% endif %}
 
-Game state:
+Game state JSON:
 {{ game_state_json }}
 
-Examples of valid outputs:
-{"name":"start","arguments":{{ run_defaults_json }}}
-{"name":"select","arguments":{}}
-{"name":"play","arguments":{"cards":[0,1,2,3,4]}}
-{"name":"discard","arguments":{"cards":[3,4]}}
-{"name":"next_round","arguments":{}}
-
-Think step by step about the best action, then output exactly one JSON object.
+Think step by step about the best legal action, then output exactly one JSON object.
