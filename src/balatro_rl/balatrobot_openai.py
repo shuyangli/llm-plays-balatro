@@ -256,7 +256,10 @@ def build_inference_input(
 
 
 def request_tensorzero_inference(
-    gateway_url: str, function_name: str, inference_input: list[dict[str, Any]]
+    gateway_url: str,
+    function_name: str,
+    inference_input: list[dict[str, Any]],
+    episode_id: str | None,
 ) -> tuple[str, dict[str, Any]]:
     from openai import OpenAI
 
@@ -264,9 +267,13 @@ def request_tensorzero_inference(
         base_url=f"{gateway_url.rstrip('/')}/openai/v1",
         api_key="tensorzero",
     )
+    extra_body: dict[str, Any] | None = None
+    if episode_id is not None:
+        extra_body = {"tensorzero::episode_id": episode_id}
     response = client.chat.completions.create(
         model=f"tensorzero::function_name::{function_name}",
         messages=inference_input,
+        extra_body=extra_body,
     )
     raw_output = response.choices[0].message.content
     if not isinstance(raw_output, str):
@@ -322,12 +329,13 @@ def choose_command(
     game_state: dict[str, Any],
     config: BotConfig,
     previous_error: str | None,
+    episode_id: str | None,
     *,
     logger: RunLogger | None = None,
     turn: int | None = None,
     attempt: int | None = None,
     state_name: str | None = None,
-) -> tuple[str, dict[str, Any], str]:
+) -> tuple[str, dict[str, Any], str, str | None]:
     inference_input = build_inference_input(game_state, config, previous_error)
     if logger is not None:
         logger.log(
@@ -338,6 +346,7 @@ def choose_command(
                 "state": state_name,
                 "gateway_url": config.gateway_url,
                 "function_name": config.function_name,
+                "episode_id": episode_id,
                 "input": inference_input,
                 "previous_error": previous_error,
             },
@@ -347,10 +356,14 @@ def choose_command(
         config.gateway_url,
         config.function_name,
         inference_input,
+        episode_id,
     )
     raw_output, parsed_output, raw_response = extract_tensorzero_output(
         raw_output, response_payload
     )
+    response_episode_id = raw_response.get("episode_id")
+    if response_episode_id is not None and not isinstance(response_episode_id, str):
+        raise ValueError("TensorZero response episode_id must be a string when present.")
     if logger is not None:
         logger.log(
             "model_output",
@@ -362,6 +375,7 @@ def choose_command(
                 "function_name": config.function_name,
                 "model": raw_response.get("model"),
                 "id": raw_response.get("id"),
+                "episode_id": response_episode_id,
                 "usage": raw_response.get("usage"),
                 "output_raw": raw_output,
                 "output_parsed": parsed_output,
@@ -369,7 +383,7 @@ def choose_command(
             },
         )
     name, arguments = validate_command(parsed_output, game_state)
-    return name, arguments, raw_output
+    return name, arguments, raw_output, response_episode_id
 
 
 def run_bot(config: BotConfig) -> None:
@@ -391,6 +405,7 @@ def run_bot(config: BotConfig) -> None:
     print(f"[log] {logger.path}")
     client = BalatroClient(port=config.port)
     previous_error: str | None = None
+    episode_id: str | None = None
     for turn_index in range(config.max_turns):
         game_state = client.call("gamestate")
         state_name = normalize_state_name(game_state)
@@ -399,6 +414,7 @@ def run_bot(config: BotConfig) -> None:
             {
                 "turn": turn_index + 1,
                 "state": state_name,
+                "episode_id": episode_id,
                 "payload": game_state,
             },
         )
@@ -409,10 +425,11 @@ def run_bot(config: BotConfig) -> None:
 
         for attempt in range(3):
             try:
-                name, arguments, raw_output = choose_command(
+                name, arguments, raw_output, response_episode_id = choose_command(
                     game_state,
                     config,
                     previous_error,
+                    episode_id,
                     logger=logger,
                     turn=turn_index + 1,
                     attempt=attempt + 1,
@@ -431,12 +448,15 @@ def run_bot(config: BotConfig) -> None:
                 )
                 print(f"[model-error] {previous_error}")
                 continue
+            if episode_id is None:
+                episode_id = response_episode_id
             logger.log(
                 "model_choice",
                 {
                     "turn": turn_index + 1,
                     "attempt": attempt + 1,
                     "state": state_name,
+                    "episode_id": episode_id,
                     "name": name,
                     "arguments": arguments,
                     "raw_output": raw_output,
@@ -454,6 +474,7 @@ def run_bot(config: BotConfig) -> None:
                     {
                         "turn": turn_index + 1,
                         "attempt": attempt + 1,
+                        "episode_id": episode_id,
                         "name": name,
                         "arguments": arguments,
                         "result": result,
@@ -468,6 +489,7 @@ def run_bot(config: BotConfig) -> None:
                     {
                         "turn": turn_index + 1,
                         "attempt": attempt + 1,
+                        "episode_id": episode_id,
                         "name": name,
                         "arguments": arguments,
                         "error": previous_error,
