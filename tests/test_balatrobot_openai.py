@@ -14,6 +14,7 @@ from balatro_rl.balatrobot_openai import (
     build_inference_input,
     extract_tensorzero_output,
     normalize_state_name,
+    request_tensorzero_inference,
     run_bot,
     validate_command,
 )
@@ -120,6 +121,58 @@ class BalatroBotOpenAITest(unittest.TestCase):
         self.assertEqual(
             {"deck": "RED", "stake": "WHITE", "seed": "ABC123"},
             arguments,
+        )
+
+    def test_request_tensorzero_inference_requests_raw_provider_payloads(self) -> None:
+        captured: dict[str, object] = {}
+
+        class FakeResponse:
+            def __init__(self) -> None:
+                self.choices = [
+                    type(
+                        "Choice",
+                        (),
+                        {"message": type("Message", (), {"content": '{"name":"play","arguments":{"cards":[0]}}'})()},
+                    )()
+                ]
+
+            def model_dump(self, mode: str = "json") -> dict[str, object]:
+                testcase.assertEqual("json", mode)
+                return {"id": "resp_123"}
+
+        class FakeCompletions:
+            def create(self, **kwargs: object) -> FakeResponse:
+                captured.update(kwargs)
+                return FakeResponse()
+
+        class FakeChat:
+            def __init__(self) -> None:
+                self.completions = FakeCompletions()
+
+        class FakeOpenAI:
+            def __init__(self, *, base_url: str, api_key: str) -> None:
+                testcase.assertEqual("http://localhost:3000/openai/v1", base_url)
+                testcase.assertEqual("tensorzero", api_key)
+                self.chat = FakeChat()
+
+        testcase = self
+        with patch("openai.OpenAI", FakeOpenAI):
+            raw_output, response_payload = request_tensorzero_inference(
+                "http://localhost:3000",
+                "balatro_next_command",
+                [{"role": "user", "content": "hello"}],
+                "episode-123",
+            )
+
+        self.assertEqual('{"name":"play","arguments":{"cards":[0]}}', raw_output)
+        self.assertEqual({"id": "resp_123"}, response_payload)
+        self.assertEqual(
+            {
+                "tensorzero::episode_id": "episode-123",
+                "tensorzero::include_raw_response": True,
+                "tensorzero::include_raw_usage": True,
+            },
+            captured["extra_body"],
         )
 
     def test_run_bot_continues_after_successful_first_attempt(self) -> None:

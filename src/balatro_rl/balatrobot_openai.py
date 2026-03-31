@@ -349,9 +349,12 @@ def request_tensorzero_inference(
         base_url=f"{gateway_url.rstrip('/')}/openai/v1",
         api_key="tensorzero",
     )
-    extra_body: dict[str, Any] | None = None
+    extra_body: dict[str, Any] = {
+        "tensorzero::include_raw_response": True,
+        "tensorzero::include_raw_usage": True,
+    }
     if episode_id is not None:
-        extra_body = {"tensorzero::episode_id": episode_id}
+        extra_body["tensorzero::episode_id"] = episode_id
     response = client.chat.completions.create(
         model=f"tensorzero::function_name::{function_name}",
         messages=inference_input,
