@@ -14,3 +14,30 @@ type = "chat_completion"
 model = "gpt_5_4_mini"
 reasoning_effort = "high"
 templates.turn_context.path = "functions/balatro_next_command/default/turn_context.minijinja"
+
+[functions.balatro_next_command.variants.strategy_v1]
+type = "chat_completion"
+model = "gpt_5_4_mini"
+reasoning_effort = "high"
+templates = { turn_context = { path = "functions/balatro_next_command/variants/strategy_v1/templates/turn_context.minijinja" }, system = { path = "functions/balatro_next_command/variants/strategy_v1/templates/system.minijinja" } }
+
+[functions.balatro_next_command.experimentation]
+type = "uniform"
+candidate_variants = ["default", "strategy_v1"]
+
+[evaluations]
+
+[evaluations.balatro_action_quality]
+type = "inference"
+function_name = "balatro_next_command"
+description = "Evaluates the quality of Balatro bot actions"
+
+[evaluations.balatro_action_quality.evaluators]
+
+[evaluations.balatro_action_quality.evaluators.action_quality]
+type = "llm_judge"
+input_format = "serialized"
+output_type = "float"
+optimize = "max"
+variants = { judge_v1 = { type = "chat_completion", active = true, model = "openai::gpt-5.4", json_mode = "on", system_instructions = "evaluations/balatro_action_quality/evaluators/action_quality/variants/judge_v1/system_instructions.txt", retries = { num_retries = 0, max_delay_s = 10.0} } }
+include = { reference_output = false}
