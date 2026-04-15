@@ -7,6 +7,15 @@ model_name = "gpt-5.4-mini-2026-03-17"
 api_type = "responses"
 include_encrypted_reasoning = true
 
+[models.gpt_5_4_nano]
+routing = ["openai"]
+
+[models.gpt_5_4_nano.providers.openai]
+type = "openai"
+model_name = "gpt-5.4-nano-2026-03-17"
+api_type = "responses"
+include_encrypted_reasoning = true
+
 [functions.balatro_next_command]
 type = "chat"
 schemas.turn_context.path = "functions/balatro_next_command/turn_context_schema.json"

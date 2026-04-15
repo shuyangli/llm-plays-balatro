@@ -7,6 +7,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+class PreprocessingError(Exception):
+    """Raised when a candidate's preprocessing.py fails at load or call time."""
+
+
 STATE_TO_CALLS: dict[str, tuple[str, ...]] = {
     "MENU": ("start",),
     "BLIND_SELECT": ("select", "skip"),
@@ -139,6 +143,28 @@ class BotConfig:
     max_turns: int
     port: int
     log_dir: Path
+    variant: str | None = None
+    preprocessing_path: Path | None = None
+
+
+def _load_preprocessing_fn(path: Path):
+    """Load and return the preprocess(game_state) callable from a Python file."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("balatro_preprocessing", path)
+    if spec is None or spec.loader is None:
+        raise PreprocessingError(f"Cannot create module spec from {path}")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)  # type: ignore[union-attr]
+    except Exception as exc:
+        raise PreprocessingError(f"Error executing {path}: {exc}") from exc
+    fn = getattr(module, "preprocess", None)
+    if not callable(fn):
+        raise PreprocessingError(
+            f"{path} must define a callable 'preprocess(game_state: dict) -> dict'"
+        )
+    return fn
 
 
 @dataclass(slots=True)
@@ -301,8 +327,26 @@ def validate_command(
 
 
 def build_inference_input(
-    game_state: dict[str, Any], config: BotConfig, previous_error: str | None
+    game_state: dict[str, Any],
+    config: BotConfig,
+    previous_error: str | None,
+    *,
+    preprocess_fn: Any = None,
 ) -> list[dict[str, Any]]:
+    if preprocess_fn is not None:
+        try:
+            result = preprocess_fn(game_state)
+            if isinstance(result, dict):
+                game_state = result
+            else:
+                raise PreprocessingError(
+                    f"preprocess() returned {type(result).__name__}, expected dict"
+                )
+        except PreprocessingError:
+            raise
+        except Exception as exc:
+            raise PreprocessingError(str(exc)) from exc
+
     state_name = normalize_state_name(game_state)
     run_defaults = {
         "deck": normalize_deck(config.deck, field_name="config.deck"),
@@ -342,6 +386,7 @@ def request_tensorzero_inference(
     function_name: str,
     inference_input: list[dict[str, Any]],
     episode_id: str | None,
+    variant_name: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     from openai import OpenAI
 
@@ -355,6 +400,8 @@ def request_tensorzero_inference(
     }
     if episode_id is not None:
         extra_body["tensorzero::episode_id"] = episode_id
+    if variant_name is not None:
+        extra_body["tensorzero::variant_name"] = variant_name
     response = client.chat.completions.create(
         model=f"tensorzero::function_name::{function_name}",
         messages=inference_input,
@@ -420,8 +467,20 @@ def choose_command(
     turn: int | None = None,
     attempt: int | None = None,
     state_name: str | None = None,
+    preprocess_fn: Any = None,
 ) -> tuple[str, dict[str, Any], str, str | None]:
-    inference_input = build_inference_input(game_state, config, previous_error)
+    try:
+        inference_input = build_inference_input(
+            game_state, config, previous_error, preprocess_fn=preprocess_fn
+        )
+    except PreprocessingError as exc:
+        if logger is not None:
+            logger.log(
+                "preprocessing_error",
+                {"turn": turn, "attempt": attempt, "error": str(exc)},
+            )
+        # Fall back to unprocessed game state so the game can continue.
+        inference_input = build_inference_input(game_state, config, previous_error)
     if logger is not None:
         logger.log(
             "model_input",
@@ -442,6 +501,7 @@ def choose_command(
         config.function_name,
         inference_input,
         episode_id,
+        variant_name=config.variant,
     )
     raw_output, parsed_output, raw_response = extract_tensorzero_output(
         raw_output, response_payload
@@ -473,6 +533,14 @@ def choose_command(
 
 def run_bot(config: BotConfig) -> None:
     from balatrobot.cli.client import BalatroClient
+
+    preprocess_fn = None
+    if config.preprocessing_path is not None:
+        try:
+            preprocess_fn = _load_preprocessing_fn(config.preprocessing_path)
+            print(f"[preprocessing] Loaded from {config.preprocessing_path}")
+        except PreprocessingError as exc:
+            print(f"[preprocessing] Failed to load — running without it: {exc}")
 
     logger = RunLogger(build_log_path(config.log_dir))
     logger.log(
@@ -521,6 +589,7 @@ def run_bot(config: BotConfig) -> None:
                     turn=turn_index + 1,
                     attempt=attempt + 1,
                     state_name=state_name,
+                    preprocess_fn=preprocess_fn,
                 )
             except ValueError as error:
                 previous_error = str(error)
@@ -648,6 +717,16 @@ def main() -> None:
         default="logs",
         help="Directory where JSONL run histories are written.",
     )
+    parser.add_argument(
+        "--variant",
+        default=None,
+        help="Force a specific TensorZero variant name (tensorzero::variant_name).",
+    )
+    parser.add_argument(
+        "--preprocessing",
+        default=None,
+        help="Path to a Python file exporting preprocess(game_state: dict) -> dict.",
+    )
     args = parser.parse_args()
 
     config = BotConfig(
@@ -659,6 +738,8 @@ def main() -> None:
         max_turns=args.max_turns,
         port=args.port,
         log_dir=Path(args.log_dir),
+        variant=args.variant,
+        preprocessing_path=Path(args.preprocessing) if args.preprocessing else None,
     )
     run_bot(config)
 
